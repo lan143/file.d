@@ -22,6 +22,7 @@ const (
 	SYSLOG_RFC3164
 	SYSLOG_RFC5424
 	CSV
+	ESP32
 )
 
 type Decoder interface {
@@ -52,6 +53,8 @@ func TypeFromString(s string) Type {
 		return CSV
 	case "auto":
 		return AUTO
+	case "esp32":
+		return ESP32
 	default:
 		return NO
 	}
@@ -73,6 +76,8 @@ func New(t Type, params Params) (Decoder, error) {
 		return NewCSVDecoder(params)
 	case RAW, CRI, POSTGRES, AUTO:
 		return nil, nil
+	case ESP32:
+		return NewESP32Decoder(params)
 	default:
 		return nil, fmt.Errorf("unknown decoder type: %v", t)
 	}

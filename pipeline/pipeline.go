@@ -484,6 +484,8 @@ func (p *Pipeline) In(sourceID SourceID, sourceName string, offsets Offsets, byt
 	case decoder.JSON, decoder.NGINX_ERROR, decoder.PROTOBUF,
 		decoder.SYSLOG_RFC3164, decoder.SYSLOG_RFC5424, decoder.CSV:
 		err = p.decoder.DecodeToJson(event.Root, bytes)
+	case decoder.ESP32:
+		err = p.decoder.DecodeToJson(event.Root, bytes)
 	case decoder.RAW:
 		event.Root.AddFieldNoAlloc(event.Root, "message").MutateToBytesCopy(event.Root, bytes[:len(bytes)-1])
 	case decoder.CRI:
