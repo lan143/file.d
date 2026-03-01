@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ozontech/file.d/cfg"
@@ -39,7 +40,7 @@ type data struct {
 
 type Label struct {
 	Label string `json:"label" required:"true"`
-	Value string `json:"value" required:"true"`
+	Value string `json:"value"`
 }
 
 // ! config-params
@@ -234,8 +235,6 @@ type Plugin struct {
 	// plugin metrics
 	sendErrorMetric *metric.CounterVec
 
-	labels map[string]string
-
 	router *pipeline.Router
 }
 
@@ -256,8 +255,6 @@ func (p *Plugin) Start(config pipeline.AnyConfig, params *pipeline.OutputPluginP
 	p.logger = params.Logger.Desugar()
 	p.avgEventSize = params.PipelineSettings.AvgEventSize
 	p.registerMetrics(params.MetricCtl)
-
-	p.labels = p.parseLabels()
 
 	p.prepareClient()
 
@@ -369,8 +366,13 @@ type request struct {
 }
 
 func (p *Plugin) send(root *insaneJSON.Root) (int, error) {
+	type batch struct {
+		labels map[string]string
+		values [][]any
+	}
+
 	messages := root.Dig("data").AsArray()
-	values := make([][]any, 0, len(messages))
+	batches := make(map[string]batch)
 
 	for _, msg := range messages {
 		tsNode := msg.Dig(p.config.TimestampField)
@@ -393,34 +395,57 @@ func (p *Plugin) send(root *insaneJSON.Root) (int, error) {
 			json.RawMessage(msg.EncodeToString()),
 		}
 
-		values = append(values, logLine)
+		labelsLine := make(map[string]string)
+		labelValues := make([]string, len(p.config.Labels))
+		for i, label := range p.config.Labels {
+			if len(label.Value) == 0 {
+				labelNode := msg.Dig(label.Label)
+				labelValue := labelNode.AsString()
+				labelNode.Suicide()
+
+				labelsLine[label.Label] = labelValue
+			} else {
+				labelsLine[label.Label] = label.Value
+			}
+
+			labelValues[i] = labelsLine[label.Label]
+		}
+		batchKey := strings.Join(labelValues, "-")
+
+		b := batches[batchKey]
+		b.labels = labelsLine
+		b.values = append(b.values, logLine)
+		batches[batchKey] = b
 	}
 
-	output := request{
-		Streams: []stream{
-			{
-				StreamLabels: p.labels,
-				Values:       values,
+	var statusCode int
+	for i := range batches {
+		output := request{
+			Streams: []stream{
+				{
+					StreamLabels: batches[i].labels,
+					Values:       batches[i].values,
+				},
 			},
-		},
-	}
+		}
 
-	data, err := json.Marshal(output)
-	if err != nil {
-		return 0, err
-	}
+		data, err := json.Marshal(output)
+		if err != nil {
+			return 0, err
+		}
 
-	p.logger.Debug("sent", zap.String("data", string(data)))
+		p.logger.Debug("sent", zap.String("data", string(data)))
 
-	statusCode, err := p.client.DoTimeout(
-		http.MethodPost,
-		"application/json",
-		data,
-		p.config.ConnectionTimeout_,
-		nil,
-	)
-	if statusCode != http.StatusNoContent {
-		return statusCode, fmt.Errorf("bad response: code=%d, err=%v", statusCode, err)
+		statusCode, err := p.client.DoTimeout(
+			http.MethodPost,
+			"application/json",
+			data,
+			p.config.ConnectionTimeout_,
+			nil,
+		)
+		if statusCode != http.StatusNoContent {
+			return statusCode, fmt.Errorf("bad response: code=%d, err=%v", statusCode, err)
+		}
 	}
 
 	return statusCode, nil
